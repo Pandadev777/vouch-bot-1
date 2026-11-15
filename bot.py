@@ -1,3 +1,4 @@
+import asyncio
 import os
 import random
 from datetime import datetime
@@ -5,7 +6,7 @@ from threading import Thread
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 from dotenv import load_dotenv
 from flask import Flask
 
@@ -46,7 +47,7 @@ def load_proofs() -> list[str]:
     if not os.path.exists(PROOFS_FILE):
         with open(PROOFS_FILE, "w", encoding="utf-8") as f:
             f.write("# Paste your 100+ direct image proof URLs below\n")
-    
+
     links = []
     with open(PROOFS_FILE, "r", encoding="utf-8") as f:
         for raw_line in f:
@@ -283,7 +284,7 @@ FEEDBACK_POOL = [
 ]
 
 # ==============================================================================
-# 4. DISCORD BOT & AUTO-VOUCH ENGINE
+# 4. DISCORD BOT & RANDOM-INTERVAL AUTO-VOUCH ENGINE
 # ==============================================================================
 class AutoVouchBot(commands.Bot):
     def __init__(self):
@@ -302,8 +303,11 @@ class AutoVouchBot(commands.Bot):
         self.seller_role_id: int | None = None
         self.buyer_role_id: int | None = None
         self.mm_role_id: int | None = None
-        self.delay_minutes: int = 5
+        self.min_delay_minutes: int = 1
+        self.max_delay_minutes: int = 5
         self.total_sent: int = 0
+        self.is_running: bool = False
+        self.vouch_task: asyncio.Task | None = None
 
     def pick_participants(self, guild: discord.Guild):
         seller_role = guild.get_role(self.seller_role_id) if self.seller_role_id else None
@@ -332,7 +336,7 @@ class AutoVouchBot(commands.Bot):
         stars_count = random.choice([4, 5])
         stars_display = "⭐" * stars_count + f" ({stars_count}/5)"
         feedback_text = random.choice(FEEDBACK_POOL)
-        
+
         proof_links = load_proofs()
         proof_url = random.choice(proof_links) if proof_links else None
 
@@ -362,28 +366,33 @@ class AutoVouchBot(commands.Bot):
         embed.set_footer(text=f"Transaction ID: VX-{random.randint(100000, 999999)} • Verified Proof")
         return embed
 
-    @tasks.loop(minutes=5)
-    async def auto_vouch_loop(self):
-        if not self.vouch_channel_id:
-            return
-
-        channel = self.get_channel(self.vouch_channel_id)
-        if not channel or not isinstance(channel, discord.TextChannel):
-            return
-
-        participants, error = self.pick_participants(channel.guild)
-        if error:
-            print(f"[!] Auto-Vouch Skipped: {error}")
-            return
-
-        seller, buyer, mm = participants
-        embed = self.build_vouch_embed(channel.guild, seller, buyer, mm)
-        ping_line = f"**SELLER:** {seller.mention} | **BUYER:** {buyer.mention} | **MM:** {mm.mention}"
-        await channel.send(content=ping_line, embed=embed)
-
-    @auto_vouch_loop.before_loop
-    async def before_auto_vouch(self):
+    async def random_vouch_worker(self):
+        """Background worker that posts vouches at randomized intervals between min and max minutes."""
         await self.wait_until_ready()
+        while self.is_running:
+            # Pick a random float duration in seconds between min_delay_minutes and max_delay_minutes
+            wait_seconds = random.uniform(self.min_delay_minutes * 60, self.max_delay_minutes * 60)
+            await asyncio.sleep(wait_seconds)
+
+            if not self.is_running:
+                break
+
+            if not self.vouch_channel_id:
+                continue
+
+            channel = self.get_channel(self.vouch_channel_id)
+            if not channel or not isinstance(channel, discord.TextChannel):
+                continue
+
+            participants, error = self.pick_participants(channel.guild)
+            if error:
+                print(f"[!] Auto-Vouch Skipped: {error}")
+                continue
+
+            seller, buyer, mm = participants
+            embed = self.build_vouch_embed(channel.guild, seller, buyer, mm)
+            ping_line = f"**SELLER:** {seller.mention} | **BUYER:** {buyer.mention} | **MM:** {mm.mention}"
+            await channel.send(content=ping_line, embed=embed)
 
 
 bot = AutoVouchBot()
@@ -393,13 +402,14 @@ bot = AutoVouchBot()
 # ==============================================================================
 vouch_group = app_commands.Group(name="vouch", description="Manage and configure the automated vouch system.")
 
-@vouch_group.command(name="configure", description="Set roles, destination channel, and delay interval.")
+@vouch_group.command(name="configure", description="Set roles, destination channel, and random delay range (min to max minutes).")
 @app_commands.describe(
     channel="Channel where auto-vouches will be posted",
     seller_role="Role representing store sellers",
     buyer_role="Role representing store buyers",
     mm_role="Role representing middleman staff",
-    delay_minutes="Delay between vouches in minutes (1 to 30)"
+    min_minutes="Minimum delay between vouches in minutes (1 to 30)",
+    max_minutes="Maximum delay between vouches in minutes (1 to 30)"
 )
 @app_commands.checks.has_permissions(administrator=True)
 async def vouch_configure(
@@ -408,19 +418,21 @@ async def vouch_configure(
     seller_role: discord.Role,
     buyer_role: discord.Role,
     mm_role: discord.Role,
-    delay_minutes: int
+    min_minutes: int,
+    max_minutes: int
 ):
-    if not (1 <= delay_minutes <= 30):
-        return await interaction.response.send_message("❌ Delay must be between **1** and **30** minutes.", ephemeral=True)
+    if not (1 <= min_minutes <= 30) or not (1 <= max_minutes <= 30):
+        return await interaction.response.send_message("❌ Both `min_minutes` and `max_minutes` must be between **1** and **30**.", ephemeral=True)
+
+    if min_minutes > max_minutes:
+        return await interaction.response.send_message("❌ `min_minutes` cannot be greater than `max_minutes`.", ephemeral=True)
 
     bot.vouch_channel_id = channel.id
     bot.seller_role_id = seller_role.id
     bot.buyer_role_id = buyer_role.id
     bot.mm_role_id = mm_role.id
-    bot.delay_minutes = delay_minutes
-
-    if bot.auto_vouch_loop.is_running():
-        bot.auto_vouch_loop.change_interval(minutes=delay_minutes)
+    bot.min_delay_minutes = min_minutes
+    bot.max_delay_minutes = max_minutes
 
     embed = discord.Embed(
         title="⚙️ Auto-Vouch System Configured",
@@ -429,14 +441,14 @@ async def vouch_configure(
             f"🛒 **Seller Role:** {seller_role.mention}\n"
             f"💳 **Buyer Role:** {buyer_role.mention}\n"
             f"🤝 **MM Role:** {mm_role.mention}\n"
-            f"⏱️ **Delay Timer:** `{delay_minutes} minute(s)`"
+            f"⏱️ **Random Delay Range:** `{min_minutes} - {max_minutes} minute(s)`"
         ),
         color=0x5865F2
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @vouch_group.command(name="toggle", description="Start or stop the automated vouch loop (on/off).")
-@app_commands.describe(state="Type 'on' to start or 'off' to stop")
+@app_commands.describe(state="Select 'On / Start' or 'Off / Stop'")
 @app_commands.choices(state=[
     app_commands.Choice(name="On / Start", value="on"),
     app_commands.Choice(name="Off / Stop", value="off")
@@ -447,13 +459,17 @@ async def vouch_toggle(interaction: discord.Interaction, state: str):
         if not bot.vouch_channel_id or not (bot.seller_role_id and bot.buyer_role_id and bot.mm_role_id):
             return await interaction.response.send_message("⚠️ Please run `/vouch configure` first!", ephemeral=True)
 
-        if not bot.auto_vouch_loop.is_running():
-            bot.auto_vouch_loop.change_interval(minutes=bot.delay_minutes)
-            bot.auto_vouch_loop.start()
-        await interaction.response.send_message(f"✅ **Auto-Vouch Started!** Posting every **{bot.delay_minutes} minute(s)** in <#{bot.vouch_channel_id}>.")
+        if not bot.is_running:
+            bot.is_running = True
+            bot.vouch_task = bot.loop.create_task(bot.random_vouch_worker())
+
+        await interaction.response.send_message(
+            f"✅ **Auto-Vouch Started!** Posting every **{bot.min_delay_minutes} to {bot.max_delay_minutes} minute(s)** in <#{bot.vouch_channel_id}>."
+        )
     else:
-        if bot.auto_vouch_loop.is_running():
-            bot.auto_vouch_loop.cancel()
+        bot.is_running = False
+        if bot.vouch_task and not bot.vouch_task.done():
+            bot.vouch_task.cancel()
         await interaction.response.send_message("🛑 **Auto-Vouch Stopped.**")
 
 @vouch_group.command(name="test", description="Send an immediate test vouch preview in the current channel.")
@@ -466,14 +482,14 @@ async def vouch_test(interaction: discord.Interaction):
     seller, buyer, mm = participants
     embed = bot.build_vouch_embed(interaction.guild, seller, buyer, mm)
     ping_line = f"**SELLER:** {seller.mention} | **BUYER:** {buyer.mention} | **MM:** {mm.mention}"
-    
+
     await interaction.response.send_message("✅ Test vouch generated below:", ephemeral=True)
     await interaction.channel.send(content=ping_line, embed=embed)
 
 @vouch_group.command(name="status", description="View current auto-vouch settings, proof count, and statistics.")
 @app_commands.checks.has_permissions(administrator=True)
 async def vouch_status(interaction: discord.Interaction):
-    status_text = "🟢 Running" if bot.auto_vouch_loop.is_running() else "🔴 Stopped"
+    status_text = "🟢 Running" if bot.is_running else "🔴 Stopped"
     ch_text = f"<#{bot.vouch_channel_id}>" if bot.vouch_channel_id else "`Not Set`"
     s_text = f"<@&{bot.seller_role_id}>" if bot.seller_role_id else "`Not Set`"
     b_text = f"<@&{bot.buyer_role_id}>" if bot.buyer_role_id else "`Not Set`"
@@ -482,7 +498,7 @@ async def vouch_status(interaction: discord.Interaction):
 
     embed = discord.Embed(title="📊 Auto-Vouch System Dashboard", color=0x5865F2)
     embed.add_field(name="Engine Status", value=status_text, inline=True)
-    embed.add_field(name="Delay Interval", value=f"`{bot.delay_minutes} min`", inline=True)
+    embed.add_field(name="Delay Window", value=f"`{bot.min_delay_minutes} - {bot.max_delay_minutes} min`", inline=True)
     embed.add_field(name="Vouches Sent", value=f"`{bot.total_sent}`", inline=True)
     embed.add_field(name="Target Channel", value=ch_text, inline=True)
     embed.add_field(name="Feedback Pool", value=f"`{len(FEEDBACK_POOL)} quotes`", inline=True)
