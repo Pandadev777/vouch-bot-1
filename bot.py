@@ -30,7 +30,7 @@ server_thread = Thread(target=run_flask, daemon=True)
 server_thread.start()
 
 # ==============================================================================
-# 2. ENVIRONMENT & CONFIGURATION
+# 2. ENVIRONMENT & ROBUST PROOFS.TXT LOADER
 # ==============================================================================
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -42,20 +42,29 @@ if not TOKEN:
 PROOFS_FILE = "proofs.txt"
 
 def load_proofs() -> list[str]:
-    """Loads image proof links strictly from proofs.txt, creating the file if missing."""
+    """Loads image proof links from proofs.txt, automatically stitching wrapped multi-line URLs."""
     if not os.path.exists(PROOFS_FILE):
         with open(PROOFS_FILE, "w", encoding="utf-8") as f:
-            f.write("# Paste your 100+ direct image proof URLs below (one link per line)\n")
+            f.write("# Paste your 100+ direct image proof URLs below\n")
     
+    links = []
     with open(PROOFS_FILE, "r", encoding="utf-8") as f:
-        links = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-    
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith(("http://", "https://")):
+                links.append(line)
+            elif links:
+                links[-1] += line
+
     return links if links else ["https://i.imgur.com/8Q9Z5vE.png"]
 
 def append_proof(url: str):
     """Appends a new image proof URL to proofs.txt."""
     with open(PROOFS_FILE, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
+        f.write(url.strip() + "\n")
 
 # ==============================================================================
 # 3. 210+ REALISTIC MARKETPLACE & MM FEEDBACKS
@@ -337,9 +346,9 @@ class AutoVouchBot(commands.Bot):
         )
 
         if guild.icon:
-            embed.set_author(name=f"{guild.name} •Vouch System", icon_url=guild.icon.url)
+            embed.set_author(name=f"{guild.name} • Automated Vouch System", icon_url=guild.icon.url)
         else:
-            embed.set_author(name=f"{guild.name} • Vouch System")
+            embed.set_author(name=f"{guild.name} • Automated Vouch System")
 
         embed.add_field(name="🛒 SELLER", value=f"{seller.mention}\n`{seller.name}`", inline=True)
         embed.add_field(name="💳 BUYER", value=f"{buyer.mention}\n`{buyer.name}`", inline=True)
