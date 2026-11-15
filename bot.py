@@ -380,7 +380,7 @@ class AutoVouchBot(commands.Bot):
 bot = AutoVouchBot()
 
 # ==============================================================================
-# 5. APP_COMMANDS.GROUP DEFINITION
+# 5. APP_COMMANDS.GROUP DEFINITION & $SYNC COMMAND
 # ==============================================================================
 vouch_group = app_commands.Group(name="vouch", description="Manage and configure the automated vouch system.")
 
@@ -493,6 +493,18 @@ async def vouch_addproof(interaction: discord.Interaction, image_url: str):
     await interaction.response.send_message(f"✅ Added proof image to `proofs.txt`! Total active proof images: **{total}**.", ephemeral=True)
 
 bot.tree.add_command(vouch_group)
+
+# Instant Force-Sync Command ($sync)
+@bot.command(name="sync")
+@commands.has_permissions(administrator=True)
+async def sync_commands(ctx):
+    """Manually force-syncs slash commands to the current server instantly."""
+    try:
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Successfully synced `{len(synced)}` slash command(s) to this server!")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to sync commands: `{e}`")
 
 # ==============================================================================
 # 6. ON_READY & STARTUP
