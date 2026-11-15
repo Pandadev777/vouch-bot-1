@@ -337,9 +337,9 @@ class AutoVouchBot(commands.Bot):
         )
 
         if guild.icon:
-            embed.set_author(name=f"{guild.name} • Automated Vouch System", icon_url=guild.icon.url)
+            embed.set_author(name=f"{guild.name} •Vouch System", icon_url=guild.icon.url)
         else:
-            embed.set_author(name=f"{guild.name} • Automated Vouch System")
+            embed.set_author(name=f"{guild.name} • Vouch System")
 
         embed.add_field(name="🛒 SELLER", value=f"{seller.mention}\n`{seller.name}`", inline=True)
         embed.add_field(name="💳 BUYER", value=f"{buyer.mention}\n`{buyer.name}`", inline=True)
